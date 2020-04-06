@@ -1,0 +1,739 @@
+{-# LANGUAGE FlexibleContexts          #-}
+{-# LANGUAGE TypeFamilies              #-}
+{-# LANGUAGE ScopedTypeVariables       #-}
+
+------------------------------------------------------------------------
+module Datasaurus2 where
+
+import qualified Statistics.Sample as S
+import qualified Data.Vector as V
+import qualified Data.Matrix as M
+import System.Random
+import Control.Monad.State
+import Control.Monad.Random
+import qualified Diagrams.Prelude     as Dia
+import qualified Diagrams.TwoD.Size   as Dia
+import qualified Diagrams.Backend.Cairo as Dia
+import Linear(dot, (^-^), (^+^), (*^), qd)
+import Data.Tuple
+import Text.Printf
+
+import System.IO
+import qualified Diagrams.Prelude     as D
+import qualified Diagrams.TwoD.Size   as D
+import qualified Diagrams.TwoD.Segment as D
+import qualified Diagrams.Segment as D
+import qualified Diagrams.Backend.Cairo as D
+import Graphics.Image.IO as I
+import System.Process
+import Control.Monad
+import qualified Data.Text as T
+
+import qualified Persistence as P
+
+----------------------------------------------------------------------
+maxItrs :: Int
+maxItrs = 200000
+
+numFramess :: Int
+numFramess = 120
+
+movieIterp :: Int -> Int -> [Int]
+movieIterp maxIt nFrames = [round (amp - amp * cos t) | t <- [0,step..pi]]
+  where
+    maxIt' :: Double
+    maxIt' = fromIntegral maxIt
+    nFrames' :: Double
+    nFrames' = fromIntegral nFrames
+    amp = maxIt'/2
+    step = pi/nFrames'
+
+myContainer' n = SC { startSpace   = datasaurus
+                    , tolerance    = 0.00235
+                    , randomBound  = 0.5
+                    , targetShape  = s1
+                    , currentSpace = datasaurus
+                    , generator    = mkStdGen n
+                    , idx          = 0
+                    }
+
+myContainer = myContainer' 0
+
+--doIt = mapM_ doIt' (movieIterp maxItrs numFramess)
+-- doIt' n = do
+--   let
+--     fileName = "yShape-" ++ (printf "%.6d" n)
+--     pdfOut = fileName ++ ".png"
+--     offOut = fileName ++ ".off"
+--     ripsOut = fileName ++ ".rips"
+--     barsOut = fileName ++ "-with-barcode" ++ ".png"
+--     figSize = D.mkWidth 1600
+--     spTxt' = (myPlot n) D.# D.center D.||| (myText n)
+--     spTxt = spTxt' D.# D.bgFrame 1 D.lightblue
+--   D.renderCairo pdfOut figSize spTxt
+--   writeOFF offOut (getSpace n)
+--   runRips offOut ripsOut
+--   pis <- P.readRips ripsOut
+--   let
+--     pis0' = [pi | pi <- pis, P.dim pi == 0]
+--     pis1' = [pi | pi <- pis, P.dim pi == 1]
+--     pis0 = P.setDeathsIf (P.inf) (75) pis0'
+--     pis1 = P.setDeathsIf (P.inf) (75) pis1'
+--     bars0 = P.drawBars pis0 D.# D.lc D.red
+--     bars1 = P.drawBars pis1 D.# D.lc D.blue
+--     bars = bars0 D.=== D.strutY 40 D.=== bars1
+--     bars' = D.position [(D.p2 (-50,50),bars D.# D.scaleY 0.058 D.# D.scaleX (100/75) )]
+--       <> D.square 100 D.# D.lwL 0
+--     spBars' = (myPlot n) D.# D.center D.||| bars'
+
+--     spBars = spBars' D.# D.bgFrame 1 D.lightblue
+--   D.renderCairo barsOut figSize spBars
+--   putStrLn $ "Done with space " ++ (show n)
+
+doIt = morphSpace ("y.off", uShape, "y-to-u-")
+--doIt = mapM_ morphSpace (zip3 spacesList targetList filesList)
+
+spacesList = ["datasaurus.off"] ++ filesList'
+  where
+    filesList' = reverse $ tail $ reverse $ map (++ "100000.off") filesList
+
+targetList = [vLines4, sqr4, wedge4, gridShape, s1, hLines2, wedge, sqr, vLines2, xShape, hLines4]
+
+filesList  = ["00-","01-","02-","03-","04-","05-","06-","07-","08-","09-","10-"]
+
+doIt' = mapM_ writeSpaceInfo pairs -- doIt' (movieIterp maxItrs numFramess)
+  where
+    fps = zipWith (++) (repeat "s1-") ns
+    ns = map (printf "%.6d") (movieIterp maxItrs numFramess)
+    spcs = map (getSpace (allSpaces myContainer)) (movieIterp maxItrs numFramess)
+    pairs = zip spcs fps
+
+morphSpace :: (FilePath, Shape, String) -> IO ()
+morphSpace (fp, ts, name) = do
+  spc <- readOff fp
+  let
+    container = mkContainer' spc ts
+    fileName = takeWhile (/= '.') fp
+    fps = zipWith (++) (repeat name) ns
+    ns = map (printf "%.6d") (movieIterp maxItrs numFramess)
+    spcs = map (getSpace (allSpaces container)) (movieIterp maxItrs numFramess)
+    pairs = zip spcs fps
+  mapM_ writeSpaceInfo pairs --(spc, fileName)
+
+readOff :: FilePath -> IO Space
+readOff fp = do
+  input <- readFile fp
+  let
+    (_:_:lns) = lines input
+    pnts = map offToPoint lns
+    spc = fromLists pnts
+  return spc
+
+offToPoint :: String -> Point
+offToPoint str = map read (words str)
+
+mkContainer :: Space -> Shape -> Int -> SpaceContainer
+mkContainer ss ts n = SC { startSpace   = ss
+                         , tolerance    = 0.002
+                         , randomBound  = 0.5
+                         , targetShape  = ts
+                         , currentSpace = ss
+                         , generator    = mkStdGen n
+                         , idx          = 0
+                         }
+
+mkContainer' ss ts = mkContainer ss ts 0
+
+writeSpaceInfo (spc, fileName) = do
+  let
+    --fileName = fp ++ "-" ++ (printf "%.6d" n)
+    pdfOut = fileName ++ ".pdf"
+    pngOut = fileName ++ ".png"
+    offOut = fileName ++ ".off"
+    ripsOut = fileName ++ ".rips"
+    barsPdfOut = fileName ++ "-with-barcode" ++ ".pdf"
+    barsOut = fileName ++ "-with-barcode" ++ ".png"
+    figSize = D.mkWidth 1600
+    spTxt' = (mkPlot spc) D.# D.center D.||| (mkText spc)
+    spTxt = spTxt' D.# D.bgFrame 1 D.lightblue
+  D.renderCairo pngOut figSize spTxt
+  D.renderCairo pdfOut figSize spTxt
+  writeOFF offOut spc
+  runRips offOut ripsOut
+  pis <- P.readRips ripsOut
+  let
+    pis0' = [pi | pi <- pis, P.dim pi == 0]
+    pis1' = [pi | pi <- pis, P.dim pi == 1]
+    pis0'' = P.longestIntervals 12 pis0'
+    pis1'' = P.longestIntervals 5 pis1'
+    pis0 = P.setDeathsIf (P.inf) (75) pis0''
+    pis1 = P.setDeathsIf (P.inf) (75) pis1''
+    bars0 = P.drawBars pis0 D.# D.lc D.red
+    bars1 = P.drawBars pis1 D.# D.lc D.blue
+    bars = bars0 D.=== D.strutY 20 D.=== bars1
+    bars' = D.position [(D.p2 (-50,50),bars D.# D.scaleY 0.5 D.# D.scaleX (100/75) )]
+      <> D.square 100 D.# D.lwL 0
+    spBars' = (mkPlot spc) D.# D.center D.||| bars'
+    spBars = spBars' D.# D.bgFrame 1 D.lightblue
+  D.renderCairo barsOut figSize spBars
+  D.renderCairo barsPdfOut figSize spBars
+  putStrLn $ "Done with space " ++ fileName --(show n)
+
+--mySpaces = runSpace spaces myContainer
+
+allSpaces :: SpaceContainer -> [Space]
+allSpaces cont = runSpace spaces cont
+
+--getSpace n = mySpaces !! n
+
+getSpace :: [Space] -> Int -> Space
+getSpace spcs n = spcs !! n
+
+-- myPlot n = (D.position pnts)
+--   where
+--     pnts'' = map D.p2 $ (toPairs (getSpace n))
+--     myCirc = D.circle 0.2 D.# D.fc D.black
+--     pnts' = zip pnts'' (repeat myCirc)
+--     pnts = pnts' ++ [(D.p2 (0,0), D.circle 0.0001), (D.p2 (100,100), D.circle 0.0001)]
+
+mkPlot spc = (D.position pnts)
+  where
+    pnts'' = map D.p2 $ (toPairs spc)
+    myCirc = D.circle 0.2 D.# D.fc D.black
+    pnts' = zip pnts'' (repeat myCirc)
+    pnts = pnts' ++ [(D.p2 (0,0), D.circle 0.0001), (D.p2 (100,100), D.circle 0.0001)]
+
+-- myText n = D.text (showStats (summaryStats (getSpace n)))
+--   D.# D.fontSize 50 D.# D.font "monospace"
+--   <> D.square 100 D.# D.lwL 0
+
+mkText spc = D.text (showStats (summaryStats spc))
+  D.# D.fontSize 50 D.# D.font "monospace"
+  <> D.square 100 D.# D.lwL 0
+
+----------------------------------------------------------------------
+type Space = M.Matrix Double
+
+data SpaceContainer = SC { startSpace  :: Space
+                         , tolerance   :: Double
+                         , randomBound :: Double
+                         , targetShape :: Shape
+                         , currentSpace :: Space
+                         , generator :: StdGen
+                         , idx :: Int
+                         } deriving (Show)
+
+type S a = State SpaceContainer a
+
+type Point = [Double]
+type Segment = (Point, Point)
+type Shape = [Segment]
+
+-- drawShape :: FilePath -> Shape -> IO ()
+-- drawShape fp shp = do
+--   let
+--     diaShape = undefined --mconcat $ map drawSeg shp
+--   D.renderCairo fp (D.mkWidth 1600) diaShape
+
+-- drawSeg :: Segment -> D.Any
+-- drawSeg seg = D.fromVertices pts
+--   where
+--     p1 = toPair $ fst seg
+--     p2 = toPair $ snd seg
+--     pts' = [p1,p2]
+--     pts = map D.p2 pts'
+
+------------------------------------------------------------------------
+toPts :: Space -> [Point]
+toPts = M.toLists
+
+pntToString :: Point -> String
+pntToString pnt = [x | x <- (show pnt), not (x `elem` "[]")]
+
+toRipserPntCld :: Space -> String
+toRipserPntCld sp = unlines $ map pntToString (M.toLists sp)
+
+writeRipser :: FilePath -> Space -> IO ()
+writeRipser fp sp = do
+  writeFile fp (toRipserPntCld sp)
+
+pntToOFFString :: Point -> String
+pntToOFFString [] = ""
+pntToOFFString (x:xs) = (show x) ++ " " ++ pntToOFFString xs
+
+toOFF :: Space -> String
+toOFF sp = header ++ (unlines $ map pntToOFFString (M.toLists sp))
+  where header = "OFF\n" ++ (show (nPoints sp)) ++ " 0 0\n"
+
+writeOFF :: FilePath -> Space -> IO ()
+writeOFF fp sp = do
+  writeFile fp (toOFF sp)
+
+runRips :: FilePath -> FilePath -> IO String
+runRips fp rp = do
+  let ripsCMD = "rips_persistence -p 2 -d 2 -o " ++ rp ++ " " ++ fp
+  rslt <- readCreateProcess (shell ripsCMD) ""
+  return rslt
+
+------------------------------------------------------------------------
+fromPairs ps = M.fromLists $ map (\(i,j) -> [i,j]) ps
+
+fromLists = M.fromLists
+
+toLists = M.toLists
+
+toPair [x,y] = (x,y)
+
+toPairs :: Space -> [(Double, Double)]
+toPairs sp = (map toPair) (toLists sp)
+
+nPoints = M.nrows
+
+dim = M.ncols
+
+------------------------------------------------------------------------
+-- TODO: Needs fixed!
+qdToSeg' :: Point -> Segment -> Double
+qdToSeg' pt (s,e)
+  | t < 0     = qd u v0
+  | t > 1     = qd u v1
+  | otherwise = qd u0 b
+  where
+    u0  = V.fromList pt
+    v0 = V.fromList s
+    v1 = V.fromList e
+    v  = v1 ^-^ v0
+    u = u0 ^-^ v0
+    t  = (u `dot` v)/(v `dot` v)
+    b  = v0 ^+^ (t *^ v)
+
+-- Only works for V2
+qdToSeg :: Point -> Segment -> Double
+qdToSeg pt (s,e) = head $ D.closestDistance diaSeg (toDiaPnt pt)
+  where
+    diaSeg = D.FLinear spt ept
+    spt = toDiaPnt s
+    ept = toDiaPnt e
+    toDiaPnt (x:y:xs) = Dia.p2 (x,y)
+
+minQdToShape :: Shape -> Point -> Double
+minQdToShape sgs pt = minimum (map (qdToSeg pt) sgs)
+
+totalQdToShape :: Shape -> Space -> Double
+totalQdToShape shp sp = sum $ map (minQdToShape shp) (M.toLists sp)
+------------------------------------------------------------------------
+runSpace :: S a -> SpaceContainer -> a
+runSpace action sc = evalState action sc
+
+rand :: Random a => S a
+rand = do
+  sc <- get
+  let
+    g   = generator sc
+    (r,g') = random g :: Random a => (a, StdGen)
+  put sc { generator = g' }
+  return r
+
+rands :: Random a => S [a]
+rands = mapM (\_ -> rand) $ repeat ()
+
+randR :: Random a => (a,a) -> S a
+randR (l,h) = do
+  sc <- get
+  let
+    g = generator sc
+    (r,g') = randomR (l,h) g
+  put sc {generator = g'}
+  return r
+
+randRs :: Random a => (a,a) -> S [a]
+randRs (l,h) = mapM (\_ -> randR (l,h)) $ repeat ()
+
+nextSpace :: S Space
+nextSpace = do
+  sc <- get
+  let
+    (ssp,tol,bnd,csp) = (startSpace sc, tolerance sc, randomBound sc, currentSpace sc)
+    ix = idx sc
+    shp = targetShape sc
+  newRN <- randR (1, nPoints ssp)
+  temp <- randR (0,1::Double)
+  rOffset <- mapM (\_ -> randR (-bnd,bnd)) [1..dim ssp]
+  let
+    nsp = perturb csp (newRN, rOffset)
+    newRow = V.toList $ M.getRow newRN nsp
+    oldRow = V.toList $ M.getRow newRN csp
+  scn <- get
+  case (correctStats ssp nsp tol) && (all (<100) newRow) && (all (>0) newRow)
+       && ((closerPoint newRow oldRow shp) || (temp < cooling (fromIntegral ix))) of
+    True -> do
+      put sc {currentSpace = nsp, generator = (generator scn), idx = ix + 1}
+      return csp
+    False -> do
+      put sc {generator = (generator scn)}
+      nextSpace
+
+cooling x = a*x^2 + b
+  where
+    maxItrs' = fromIntegral maxItrs
+    a' = 0.01
+    b = 0.4
+    a = (a' - b)/maxIters'^^2
+
+spaces = mapM (\_ -> nextSpace) $ repeat ()
+
+perturb spc (ix, perRow) = addToR spc ix perRow
+
+addToR mat rNum row = M.mapRow (\c x -> x + (row !! (c-1))) rNum mat
+
+closerSpace :: Space -> Space -> Shape -> Bool
+closerSpace s1 s2 shp = totalQdToShape shp s2 < totalQdToShape shp s1
+
+closerPoint p1 p2 shp = ((minQdToShape shp p1) <= (minQdToShape shp p2))
+
+correctStats :: Space -> Space -> Double -> Bool
+correctStats sp1 sp2 tol = all (< tol) (summaryStatsDiffs sp1 sp2)
+--correctStats :: Space -> Space -> Int -> Bool
+--correctStats sp1 sp2 digits = fsp1 == fsp2
+--  where
+--    fsp1 = map (floored digits) $ summaryStatsDiffs' sp1
+--    fsp2 = map (floored digits) $ summaryStatsDiffs' sp2
+  --all (< 0.000001) fs
+  --where fs = map (floored digits) (summaryStatsDiffs sp1 sp2)
+
+
+floored d n = (fromInteger $ floor $ n * (10^d)) / (10.0^^d)
+
+------------------------------------------------------------------------
+data SummaryStats = SS { means :: [Double]
+                       ,   sds :: [Double]
+                       ,  corr :: Double
+                       } deriving (Show)
+
+compMean sp n = S.mean $ M.getCol n sp
+
+compSD sp n = S.stdDev $ M.getCol n sp
+
+compCorr sp (c1, c2) = S.correlation $ V.zip v1 v2
+  where
+    v1 = M.getCol c1 sp
+    v2 = M.getCol c2 sp
+
+summaryStats sp = SS { means = map (compMean sp) comps
+                     , sds   = map (compSD sp) comps
+                     , corr = compCorr sp (1,2) }
+  where comps = [1..(dim sp)]
+
+summaryStatsDiffs sp1 sp2 = md ++ sdd  ++ [crd]
+  where
+    mf = means . summaryStats
+    sf = sds . summaryStats
+    cf = corr . summaryStats
+    diff x y = abs (x-y)
+    md = zipWith diff (mf sp1) (mf sp2)
+    sdd = zipWith diff (sf sp1) (sf sp2)
+    crd = diff (cf sp1) (cf sp2)
+
+summaryStatsDiffs' sp1 = md ++ sdd
+  where
+    md  = means . summaryStats $ sp1
+    sdd = sds . summaryStats $ sp1
+
+showStats :: SummaryStats -> String
+showStats ss = "x-mean:" ++ x ++ "\n"
+  ++ "y-mean:" ++ y ++ "\n"
+  ++ "x-sd  :" ++ xsd ++ "\n"
+  ++ "y-sd  :" ++ ysd ++ "\n"
+  ++ "corr  :" ++ corl ++ "\n"
+  where
+    x = printf "%.4f" $ (means ss) !! 0
+    y = printf "%.4f" $ (means ss) !! 1
+    xsd = printf "%.4f" $ (sds ss) !! 0
+    ysd = printf "%.4f" $ (sds ss) !! 1
+    corl = printf "%.4f" $ (corr ss)
+
+------------------------------------------------------------------------
+mySpace :: Space
+mySpace = fromLists [ [1,-1]
+                    , [2,-2]
+                    , [3,-3]
+                    , [4,-4]
+                    ]
+
+------------------------------------------------------------------------
+circSpace :: Double -> Double -> Space
+circSpace rx ry = fromPairs $ circ' rx ry (54.26,47.83) 40
+
+circSpace' :: Double -> (Double, Double) -> Space
+circSpace' r (h,k) = fromPairs $ circ' r r (h,k) 40
+
+circ' rx ry (h,k) pts = [(h+rx*cos t, k+ry*sin t) | t <- [0,stp..2*pi :: Double]]
+  where stp = 2*pi/pts
+
+toSegs :: Space -> Shape
+toSegs sp = toSegs' (M.toLists sp)
+
+toSegs' :: [Point] -> [Segment]
+toSegs' [] = []
+toSegs' (x:[])   = []
+toSegs' (x:y:xs) = (toSeg x y): toSegs' (y:xs)
+
+toSeg :: Point -> Point -> Segment
+toSeg p1 p2 = (p1,p2)
+
+------------------------------------------------------------------------
+toShape = toSegs . fromPairs
+
+xCenter = 54.26
+yCenter = 47.83
+
+sqr :: Shape
+sqr = [ ([85,18], [85,78])
+      , ([25,18], [25,78])
+      , ([25,18], [85,18])
+      , ([25,78], [85,78])
+      ]
+
+sqr4 :: Shape
+sqr4 = [ ([55,18], [55,78])
+       , ([25,48], [85,48])
+       ] ++ sqr
+
+s1 :: Shape
+s1 = toSegs $ circSpace 32 32
+
+s1s :: Shape
+s1s = toSegs $ circSpace 12 12
+
+rings :: Shape
+rings = (s1 ++ s1s)
+
+wedge :: Shape
+wedge = toSegs (circSpace' r (xCenter, yCenter+r)) ++ toSegs (circSpace' r (xCenter, yCenter-r))
+  where r = 22
+
+wedge4 :: Shape
+wedge4 = toSegs (circSpace' r (xCenter-r, yCenter-r)) ++ toSegs (circSpace' r (xCenter+r, yCenter-r))
+         ++ toSegs (circSpace' r (xCenter-r, yCenter+r)) ++ toSegs (circSpace' r (xCenter+r, yCenter+r))
+  where r = 16
+
+star :: Shape
+star = undefined
+
+vLines2 :: Shape
+vLines2 = [ ([30,0], [30,100])
+          , ([70,0], [70,100]) ]
+
+vLines4 :: Shape
+vLines4 = [ ([50,0], [50,100])
+          , ([90,0] ,[90,100]) ] ++ vLines2
+
+hLines2 :: Shape
+hLines2 = [ ([0,10], [100,10])
+          , ([0,90],[100,90])
+          ]
+
+hLines4 :: Shape
+hLines4 = [ ([0,37], [100,37])
+          , ([0,64] , [100,64])
+          ] ++ hLines2
+
+xShape :: Shape
+xShape = [ ([20,0], [100,100])
+         , ([20,100], [100,0])
+         ]
+
+gridShape :: Shape
+gridShape =[ ([20,15], [21,15])
+           , ([50,15], [51,15])
+           , ([80,15], [76,15])
+
+           , ([20,50], [21,50])
+           , ([50,50], [51,50])
+           , ([80,50], [81,50])
+
+           , ([20,85], [21,85])
+           , ([50,85], [51,85])
+           , ([80,85], [81,85]) ]
+
+yShape :: Shape
+yShape = [ ([xCenter, yCenter], [xCenter + xOffset, yCenter + yOffset])
+         , ([xCenter, yCenter], [xCenter - xOffset, yCenter + yOffset])
+         , ([xCenter, yCenter], [xCenter, yCenter - yOffset])
+         ]
+  where
+    xOffset = 38
+    yOffset = 40
+
+uShape :: Shape
+uShape = [ ([78,28], [78,95])
+         , ([32,28], [32,95])
+         , ([32,28], [78,28])
+         ]
+
+down4Shape :: Shape
+down4Shape = undefined
+
+up4Shape :: Shape
+up4Shape = undefined
+
+randSpace :: Space
+randSpace = fromPairs randSpaceRaw
+
+randSpaceRaw = undefined
+
+datasaurus :: Space
+datasaurus = fromPairs datasaurusRaw
+
+datasaurusRaw = [ (55.3846, 97.1795)
+                , (51.5385, 96.0256)
+                , (46.1538, 94.4872)
+                , (42.8205, 91.4103)
+                , (40.7692, 88.3333)
+                , (38.7179, 84.8718)
+                , (35.641, 79.8718)
+                , (33.0769, 77.5641)
+                , (28.9744, 74.4872)
+                , (26.1538, 71.4103)
+                , (23.0769, 66.4103)
+                , (22.3077, 61.7949)
+                , (22.3077, 57.1795)
+                , (23.3333, 52.9487)
+                , (25.8974, 51.0256)
+                , (29.4872, 51.0256)
+                , (32.8205, 51.0256)
+                , (35.3846, 51.4103)
+                , (40.2564, 51.4103)
+                , (44.1026, 52.9487)
+                , (46.6667, 54.1026)
+                , (50, 55.2564)
+                , (53.0769, 55.641)
+                , (56.6667, 56.0256)
+                , (59.2308, 57.9487)
+                , (61.2821, 62.1795)
+                , (61.5385, 66.4103)
+                , (61.7949, 69.1026)
+                , (57.4359, 55.2564)
+                , (54.8718, 49.8718)
+                , (52.5641, 46.0256)
+                , (48.2051, 38.3333)
+                , (49.4872, 42.1795)
+                , (51.0256, 44.1026)
+                , (45.3846, 36.4103)
+                , (42.8205, 32.5641)
+                , (38.7179, 31.4103)
+                , (35.1282, 30.2564)
+                , (32.5641, 32.1795)
+                , (30, 36.7949)
+                , (33.5897, 41.4103)
+                , (36.6667, 45.641)
+                , (38.2051, 49.1026)
+                , (29.7436, 36.0256)
+                , (29.7436, 32.1795)
+                , (30, 29.1026)
+                , (32.0513, 26.7949)
+                , (35.8974, 25.2564)
+                , (41.0256, 25.2564)
+                , (44.1026, 25.641)
+                , (47.1795, 28.718)
+                , (49.4872, 31.4103)
+                , (51.5385, 34.8718)
+                , (53.5897, 37.5641)
+                , (55.1282, 40.641)
+                , (56.6667, 42.1795)
+                , (59.2308, 44.4872)
+                , (62.3077, 46.0256)
+                , (64.8718, 46.7949)
+                , (67.9487, 47.9487)
+                , (70.5128, 53.718)
+                , (71.5385, 60.641)
+                , (71.5385, 64.4872)
+                , (69.4872, 69.4872)
+                , (46.9231, 79.8718)
+                , (48.2051, 84.1026)
+                , (50, 85.2564)
+                , (53.0769, 85.2564)
+                , (55.3846, 86.0256)
+                , (56.6667, 86.0256)
+                , (56.1538, 82.9487)
+                , (53.8462, 80.641)
+                , (51.2821, 78.718)
+                , (50, 78.718)
+                , (47.9487, 77.5641)
+                , (29.7436, 59.8718)
+                , (29.7436, 62.1795)
+                , (31.2821, 62.5641)
+                , (57.9487, 99.4872)
+                , (61.7949, 99.1026)
+                , (64.8718, 97.5641)
+                , (68.4615, 94.1026)
+                , (70.7692, 91.0256)
+                , (72.0513, 86.4103)
+                , (73.8462, 83.3333)
+                , (75.1282, 79.1026)
+                , (76.6667, 75.2564)
+                , (77.6923, 71.4103)
+                , (79.7436, 66.7949)
+                , (81.7949, 60.2564)
+                , (83.3333, 55.2564)
+                , (85.1282, 51.4103)
+                , (86.4103, 47.5641)
+                , (87.9487, 46.0256)
+                , (89.4872, 42.5641)
+                , (93.3333, 39.8718)
+                , (95.3846, 36.7949)
+                , (98.2051, 33.718)
+                , (56.6667, 40.641)
+                , (59.2308, 38.3333)
+                , (60.7692, 33.718)
+                , (63.0769, 29.1026)
+                , (64.1026, 25.2564)
+                , (64.359, 24.1026)
+                , (74.359, 22.9487)
+                , (71.2821, 22.9487)
+                , (67.9487, 22.1795)
+                , (65.8974, 20.2564)
+                , (63.0769, 19.1026)
+                , (61.2821, 19.1026)
+                , (58.7179, 18.3333)
+                , (55.1282, 18.3333)
+                , (52.3077, 18.3333)
+                , (49.7436, 17.5641)
+                , (47.4359, 16.0256)
+                , (44.8718, 13.718)
+                , (48.7179, 14.8718)
+                , (51.2821, 14.8718)
+                , (54.1026, 14.8718)
+                , (56.1538, 14.1026)
+                , (52.0513, 12.5641)
+                , (48.7179, 11.0256)
+                , (47.1795, 9.8718)
+                , (46.1538, 6.0256)
+                , (50.5128, 9.4872)
+                , (53.8462, 10.2564)
+                , (57.4359, 10.2564)
+                , (60, 10.641)
+                , (64.1026, 10.641)
+                , (66.9231, 10.641)
+                , (71.2821, 10.641)
+                , (74.359, 10.641)
+                , (78.2051, 10.641)
+                , (67.9487, 8.718)
+                , (68.4615, 5.2564)
+                , (68.2051, 2.9487)
+                , (37.6923, 25.7692)
+                , (39.4872, 25.3846)
+                , (91.2821, 41.5385)
+                , (50, 95.7692)
+                , (47.9487, 95)
+                , (44.1026, 92.6923)
+                ]
+
+
+-- drawSeg seg = fromVertices pts --(map p2 [(0,0), (1,0.3), (2,0), (2.2,0.3)])
+--     where
+--         pnt1 = toPair $ fst seg
+--         pnt2 = toPair $ snd seg
+--         pts' = [pnt1,pnt2]
+--         pts = map p2 pts'
+-- drawShape shp = mconcat $ map drawSeg shp
