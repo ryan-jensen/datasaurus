@@ -19,7 +19,7 @@ class Simplex:
     
     Attributes:
         dim: The dimension of the simplex (number of vertices - 1).
-        points: List of vertices of the simplex.
+        points: List of vertices of the simplex (as numpy arrays).
     """
     
     def __init__(self, points: List[Point]):
@@ -29,7 +29,8 @@ class Simplex:
             points: List of vertices. The dimension is len(points) - 1.
         """
         self.dim = len(points) - 1
-        self.points = points
+        # Ensure all points are numpy arrays
+        self.points = [np.array(p, dtype=np.float64) for p in points]
     
     @classmethod
     def empty(cls) -> 'Simplex':
@@ -138,7 +139,7 @@ class Simplex:
         
         # Translate to origin
         q = self.points[0]
-        p_translated = p - q
+        p_translated = np.array(p, dtype=np.float64) - q
         
         # Get vectors from first vertex
         vectors = self.as_vectors()

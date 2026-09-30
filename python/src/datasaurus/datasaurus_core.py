@@ -158,7 +158,7 @@ def circ(rx: R, ry: R, center: Tuple[R, R], npts: int) -> List[Simplex]:
     h, k = center
     stp = 2 * math.pi / npts
     points = [(h + rx * math.cos(t), k + ry * math.sin(t)) 
-              for t in [0, stp, 2*stp, ..., 2*math.pi]]
+              for t in [i * stp for i in range(npts + 1)]]
     return from_pairs(points)
 
 

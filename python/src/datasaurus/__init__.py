@@ -16,10 +16,6 @@ from .datasaurus_core import (
     mk_point_cloud,
     iters,
     cooling,
-)
-
-# Re-export for convenience
-from .datasaurus_core import (
     means, variances, co_var_matrix,
     total_qd,
     swap_row, take_rows, drop_rows, as_row,
@@ -52,4 +48,23 @@ __all__ = [
     "mk_point_cloud",
     "iters",
     "cooling",
+    "means",
+    "variances",
+    "co_var_matrix",
+    "total_qd",
+    "swap_row",
+    "take_rows",
+    "drop_rows",
+    "as_row",
+    "v_lines2",
+    "v_lines4",
+    "h_lines2",
+    "h_lines4",
+    "sqr",
+    "x_shape",
+    "wedge",
+    "wedge4",
+    "grid_shape",
+    "s1",
+    "sqr4",
 ]
